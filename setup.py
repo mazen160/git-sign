@@ -9,7 +9,7 @@ class RenameScript(install_scripts):
         install_scripts.run(self)
         for f in self.get_outputs():
             if f.endswith("git-sign.py"):
-                dest = f[:-3]  # strip .py
+                dest = f[:-3]
                 shutil.move(f, dest)
 
 

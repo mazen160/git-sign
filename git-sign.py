@@ -3,6 +3,7 @@
 git-sign: Re-sign commits on a branch with your GPG/SSH key.
 
 Built for stamping PRs created by AI agents that can't sign commits.
+Author: Mazin Ahmed - mazin[at]mazinahmed[dot]net | 2026
 """
 
 import argparse
