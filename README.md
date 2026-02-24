@@ -8,9 +8,9 @@ Re-sign commits on a branch with your GPG or SSH key. Built for stamping PRs cre
 
 # Why?
 
-AI coding agents, including Claude, Cursor, ChatGPT Codex, Gemini, Github Copilot do not support signning git commits as of today (Feb 23, 2026). When AI Agents create pull requests, every commit shows up as "Unverified", and there is no way to supply a GPG or SSH key to sign the agent's PR. If you are trying to ensure commit signing on your organization without affecting developer experience, then you'll hit a blocker.
+AI coding agents, including Claude, Cursor, ChatGPT Codex, Gemini, Github Copilot do not support signing git commits as of today (Feb 23, 2026). When AI Agents create pull requests, every commit shows up as "Unverified", and there is no way to supply a GPG or SSH key to sign the agent's PR. If you are trying to ensure commit signing on your organization without affecting developer experience, you'll hit a blocker.
 
-git-sign fixes this. After an AI agent creates a PR, you can run `git-sign` on the branch. `git-sign` squashes the commits into a single signed commit. One command, done.
+**git-sign** fixes this. After an AI agent creates a PR, you can run `git-sign` on the branch. `git-sign` squashes the commits into a single signed commit. One command, done.
 
 It works with GPG and SSH signing. Whatever you have configured in `git config`, git-sign uses it.
 
@@ -46,7 +46,7 @@ pip install .
 
 Or just run the script directly:
 ```shell
-python git-sign.py
+python git_sign.py
 ```
 
 ---
