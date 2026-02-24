@@ -46,7 +46,7 @@ pip install .
 
 Or just run the script directly:
 ```shell
-python git_sign.py
+python git-sign.py
 ```
 
 ---
