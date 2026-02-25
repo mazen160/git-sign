@@ -366,6 +366,11 @@ def handle_pr(args):
         print(f"Cleaning up {tmpdir}...")
         shutil.rmtree(tmpdir, ignore_errors=True)
 
+    print(f"\nSuccess: PR #{number} has been signed and pushed.")
+    if args.merge:
+        print(f"PR #{number} has been merged.")
+    print(f"View: {pr_url}")
+
 
 def main():
     banner()
@@ -445,6 +450,9 @@ def main():
             force_push=args.force_push,
             message=args.message,
         )
+
+        if not args.dry_run:
+            print(f"\nSuccess: commits on {branch} have been signed.")
 
 
 if __name__ == "__main__":
