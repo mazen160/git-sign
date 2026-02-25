@@ -205,7 +205,7 @@ def fetch_pr_metadata(owner, repo, number):
     result = run([
         "gh", "pr", "view", str(number),
         "-R", f"{owner}/{repo}",
-        "--json", "headRefName,baseRefName,headRepository,state,title,url",
+        "--json", "headRefName,baseRefName,headRepository,headRepositoryOwner,state,title,url",
     ])
     if result.returncode != 0:
         print(f"Error: could not fetch PR #{number} from {owner}/{repo}.",
@@ -221,7 +221,8 @@ def fetch_pr_metadata(owner, repo, number):
         sys.exit(1)
 
     head_repo = data["headRepository"]
-    clone_url = f"https://github.com/{head_repo['owner']['login']}/{head_repo['name']}.git"
+    head_owner = data["headRepositoryOwner"]
+    clone_url = f"https://github.com/{head_owner['login']}/{head_repo['name']}.git"
 
     return {
         "headRefName": data["headRefName"],
