@@ -7,7 +7,10 @@ Author: Mazin Ahmed - mazin[at]mazinahmed[dot]net | 2026
 """
 
 import argparse
+import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -81,7 +84,8 @@ def confirm_proceed(branch):
 
 
 def sign_commits(
-    branch, remote, remote_base, dry_run=False, force_push=False, message=None
+    branch, remote, remote_base, dry_run=False, force_push=False, message=None,
+    cwd=None,
 ):
     if dry_run:
         print(f"Dry run -- would squash and sign commits on {branch}:")
@@ -103,7 +107,7 @@ def sign_commits(
         with open(diff_path, "wb") as f:
             subprocess.run(
                 ["git", "diff", "--binary", remote_base, branch],
-                stdout=f,
+                stdout=f, cwd=cwd,
             )
 
         if os.path.getsize(diff_path) == 0:
@@ -113,13 +117,17 @@ def sign_commits(
             sys.exit(1)
 
         print(f"Resetting branch to {remote_base}...")
-        result = subprocess.run(["git", "reset", "--hard", remote_base], text=True)
+        result = subprocess.run(
+            ["git", "reset", "--hard", remote_base], text=True, cwd=cwd,
+        )
         if result.returncode != 0:
             print("Failed to reset branch.", file=sys.stderr)
             sys.exit(1)
 
         print("Applying diff...")
-        result = subprocess.run(["git", "apply", diff_path], text=True)
+        result = subprocess.run(
+            ["git", "apply", diff_path], text=True, cwd=cwd,
+        )
         if result.returncode != 0:
             print("Failed to apply diff.", file=sys.stderr)
             print("You may need to manually recover the branch.", file=sys.stderr)
@@ -128,14 +136,14 @@ def sign_commits(
     finally:
         os.unlink(diff_path)
 
-    subprocess.run(["git", "add", "."], text=True)
+    subprocess.run(["git", "add", "."], text=True, cwd=cwd)
 
     print("Committing signed changes...")
     commit_cmd = ["git", "commit", "-S"]
     if message:
         commit_cmd += ["-m", message]
 
-    result = subprocess.run(commit_cmd, text=True)
+    result = subprocess.run(commit_cmd, text=True, cwd=cwd)
     if result.returncode != 0:
         print("Commit failed.", file=sys.stderr)
         sys.exit(1)
@@ -146,7 +154,7 @@ def sign_commits(
         print(f"Force pushing to {remote}/{branch}...")
         push_result = subprocess.run(
             ["git", "push", "--force", remote, branch],
-            text=True,
+            text=True, cwd=cwd,
         )
         if push_result.returncode != 0:
             print("Force push failed.", file=sys.stderr)
@@ -155,6 +163,128 @@ def sign_commits(
     else:
         print("You likely need to force push:")
         print(f"  git push --force {remote} {branch}")
+
+
+def check_gh_cli():
+    """Verify gh CLI is installed and authenticated."""
+    result = run(["gh", "auth", "status"])
+    if result.returncode != 0:
+        print("Error: gh CLI is not installed or not authenticated.", file=sys.stderr)
+        print("Install: https://cli.github.com/", file=sys.stderr)
+        print("Auth:    gh auth login", file=sys.stderr)
+        sys.exit(1)
+
+
+def resolve_pr(pr_arg):
+    """Parse a PR number or URL into (owner, repo, number)."""
+    if pr_arg.isdigit():
+        # PR number — need to infer owner/repo from gh context or current repo
+        result = run(["gh", "repo", "view", "--json", "owner,name"])
+        if result.returncode != 0:
+            print("Error: could not determine repo. Use a full PR URL instead.",
+                  file=sys.stderr)
+            sys.exit(1)
+        data = json.loads(result.stdout)
+        return data["owner"]["login"], data["name"], int(pr_arg)
+
+    # Try to parse as URL: https://github.com/owner/repo/pull/123
+    match = re.match(
+        r"https?://github\.com/([^/]+)/([^/]+)/pull/(\d+)", pr_arg
+    )
+    if match:
+        return match.group(1), match.group(2), int(match.group(3))
+
+    print(f"Error: could not parse PR argument: {pr_arg}", file=sys.stderr)
+    print("Use a PR number (e.g. 42) or URL (e.g. https://github.com/owner/repo/pull/42)",
+          file=sys.stderr)
+    sys.exit(1)
+
+
+def fetch_pr_metadata(owner, repo, number):
+    """Fetch PR metadata via gh CLI."""
+    result = run([
+        "gh", "pr", "view", str(number),
+        "-R", f"{owner}/{repo}",
+        "--json", "headRefName,baseRefName,headRepository,headRepositoryOwner,state,title,url",
+    ])
+    if result.returncode != 0:
+        print(f"Error: could not fetch PR #{number} from {owner}/{repo}.",
+              file=sys.stderr)
+        print(result.stderr.strip(), file=sys.stderr)
+        sys.exit(1)
+
+    data = json.loads(result.stdout)
+
+    if data["state"] != "OPEN":
+        print(f"Error: PR #{number} is {data['state'].lower()}, not open.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    head_repo = data["headRepository"]
+    head_owner = data["headRepositoryOwner"]
+    clone_url = f"https://github.com/{head_owner['login']}/{head_repo['name']}.git"
+
+    return {
+        "headRefName": data["headRefName"],
+        "baseRefName": data["baseRefName"],
+        "clone_url": clone_url,
+        "state": data["state"],
+        "title": data["title"],
+        "url": data["url"],
+    }
+
+
+def clone_pr_repo(clone_url, branch, base_branch):
+    """Shallow-clone a repo into a temp directory and check out the PR branch."""
+    tmpdir = tempfile.mkdtemp(prefix="git-sign-pr-")
+    print(f"Cloning {clone_url} into {tmpdir}...")
+
+    result = subprocess.run(
+        ["git", "clone", "--depth=1", f"--branch={base_branch}", clone_url, tmpdir],
+        text=True,
+    )
+    if result.returncode != 0:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print("Error: clone failed.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Fetching branch {branch}...")
+    result = subprocess.run(
+        ["git", "fetch", "origin", f"{branch}:{branch}", "--depth=50"],
+        cwd=tmpdir, text=True,
+    )
+    if result.returncode != 0:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print(f"Error: could not fetch branch {branch}.", file=sys.stderr)
+        sys.exit(1)
+
+    result = subprocess.run(
+        ["git", "checkout", branch],
+        cwd=tmpdir, text=True,
+    )
+    if result.returncode != 0:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        print(f"Error: could not checkout branch {branch}.", file=sys.stderr)
+        sys.exit(1)
+
+    # Ensure we have the base branch ref for diffing
+    subprocess.run(
+        ["git", "fetch", "origin", base_branch, "--depth=50"],
+        cwd=tmpdir, text=True,
+    )
+
+    return tmpdir
+
+
+def merge_pr(owner, repo, number):
+    """Merge a PR via gh CLI."""
+    print(f"Merging PR #{number}...")
+    result = run(["gh", "pr", "merge", str(number), "-R", f"{owner}/{repo}", "--merge"])
+    if result.returncode != 0:
+        print("Error: merge failed.", file=sys.stderr)
+        print(result.stderr.strip(), file=sys.stderr)
+        sys.exit(1)
+    print(f"PR #{number} merged.")
 
 
 def banner():
@@ -169,6 +299,77 @@ def banner():
     squash & sign commits. stamp your PRs.
 """
     )
+
+
+def handle_pr(args):
+    """Handle the --pr workflow: resolve PR, clone, sign, push, optionally merge."""
+    # Phase 1: Check prerequisites
+    check_gh_cli()
+    validate_signing_key()
+
+    # Phase 2: Resolve PR metadata
+    owner, repo, number = resolve_pr(args.pr)
+    meta = fetch_pr_metadata(owner, repo, number)
+
+    pr_branch = meta["headRefName"]
+    base_branch = meta["baseRefName"]
+    clone_url = meta["clone_url"]
+    pr_title = meta["title"]
+    pr_url = meta["url"]
+
+    if not args.yes and not args.dry_run:
+        print(f"PR: {pr_url}")
+        print(f"  Title:  {pr_title}")
+        print(f"  Branch: {pr_branch} -> {base_branch}")
+        print(f"  Repo:   {clone_url}")
+        print()
+        print("This will shallow-clone the repo, squash & sign commits, and force push.")
+        if args.merge:
+            print("After signing, the PR will be merged.")
+        try:
+            answer = input("Proceed? (y/n): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            sys.exit(1)
+        if answer != "y":
+            sys.exit(1)
+
+    if args.dry_run:
+        print(f"Dry run -- would sign PR {pr_url}:")
+        print(f"  Clone:    git clone --depth=1 --branch {base_branch} {clone_url} <tmpdir>")
+        print(f"  Fetch:    git fetch origin {pr_branch} --depth=50")
+        print(f"  Checkout: git checkout {pr_branch}")
+        print(f"  Diff:     git diff --binary origin/{base_branch} {pr_branch}")
+        print(f"  Reset:    git reset --hard origin/{base_branch}")
+        print(f"  Apply:    git apply <diff>")
+        print(f"  Commit:   git commit -S -m \"{args.message or pr_title}\"")
+        print(f"  Push:     git push --force origin {pr_branch}")
+        if args.merge:
+            print(f"  Merge:    gh pr merge {number} -R {owner}/{repo}")
+        return
+
+    # Phase 3: Clone into temp dir
+    tmpdir = clone_pr_repo(clone_url, pr_branch, base_branch)
+    try:
+        # Phase 4: Sign commits in temp clone
+        message = args.message or pr_title
+        remote_base = f"origin/{base_branch}"
+        sign_commits(
+            pr_branch, "origin", remote_base,
+            force_push=True, message=message, cwd=tmpdir,
+        )
+
+        # Phase 5: Merge if requested
+        if args.merge:
+            merge_pr(owner, repo, number)
+    finally:
+        print(f"Cleaning up {tmpdir}...")
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    print(f"\nSuccess: PR #{number} has been signed and pushed.")
+    if args.merge:
+        print(f"PR #{number} has been merged.")
+    print(f"View: {pr_url}")
 
 
 def main():
@@ -205,6 +406,16 @@ def main():
         help="skip confirmation prompt",
     )
     parser.add_argument(
+        "--pr",
+        metavar="PR",
+        help="GitHub PR number or URL to sign (requires gh CLI)",
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="merge the PR after signing (requires --pr)",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"%(prog)s {__version__}",
@@ -212,27 +423,36 @@ def main():
 
     args = parser.parse_args()
 
-    check_git_repo()
+    if args.merge and not args.pr:
+        parser.error("--merge requires --pr")
 
-    branch = current_branch()
-    validate_branch(branch)
-    validate_signing_key()
+    if args.pr:
+        handle_pr(args)
+    else:
+        check_git_repo()
 
-    remote = get_primary_remote()
-    base_branch = get_base_branch(remote, override=args.base)
-    remote_base = f"{remote}/{base_branch}"
+        branch = current_branch()
+        validate_branch(branch)
+        validate_signing_key()
 
-    if not args.yes and not args.dry_run:
-        confirm_proceed(branch)
+        remote = get_primary_remote()
+        base_branch = get_base_branch(remote, override=args.base)
+        remote_base = f"{remote}/{base_branch}"
 
-    sign_commits(
-        branch,
-        remote,
-        remote_base,
-        dry_run=args.dry_run,
-        force_push=args.force_push,
-        message=args.message,
-    )
+        if not args.yes and not args.dry_run:
+            confirm_proceed(branch)
+
+        sign_commits(
+            branch,
+            remote,
+            remote_base,
+            dry_run=args.dry_run,
+            force_push=args.force_push,
+            message=args.message,
+        )
+
+        if not args.dry_run:
+            print(f"\nSuccess: commits on {branch} have been signed.")
 
 
 if __name__ == "__main__":
